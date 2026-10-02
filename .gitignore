@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+venv/
+.venv/
+ENV/
+env/
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Large Datasets, Raw Data & Tables
+dataset/
+data/
+*.parquet
+*.tsv
+errors.tsv
+
+# Runtime Caches, Intermediate Features & Competition-Derived Artifacts
+work/
+work/*
+models/
+models/*
+output/
+runs/
+*.log
+
+# Sensitive Credentials
+*.key
+*.pem
+*.token
+.env
