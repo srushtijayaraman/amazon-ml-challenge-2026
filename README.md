@@ -5,8 +5,8 @@
 
 An end-to-end, high-performance machine learning pipeline for large-scale **Business Entity Resolution** developed for the **Amazon ML Challenge 2026**.
 
-**Final Competition Leaderboard Score:** **0.967915** Macro $F_{0.5}$
-*(Official evaluation metric: Entity-Level Macro-Averaged $F_{0.5}$ ; this represents the competition leaderboard result, not model accuracy)*
+**Final Competition Leaderboard Score:** **0.967915** Macro F<sub>0.5</sub>
+*(Official evaluation metric: Entity-Level Macro-Averaged F<sub>0.5</sub>; this represents the competition leaderboard result, not model accuracy)*
 
 The system resolves millions of noisy, multilingual commercial records across three heterogeneous data sources under strict memory and runtime constraints, eliminating candidate truncation and cross-entity collisions by mathematical construction.
 
@@ -34,10 +34,10 @@ The system resolves millions of noisy, multilingual commercial records across th
 Business Entity Resolution (ER) is the task of determining whether multiple commercial records—originating from disparate web crawlers, state registries, or partner directories—refer to the exact same physical business entity.
 
 ### Challenge Data Configuration
-- **Source 1 ($S_1$):** Master catalog containing 1.73M reference entities with complete name, address, and jurisdiction fields.
-- **Source 2 ($S_2$) & Source 3 ($S_3$):** 9.97M noisy observation records characterized by typographical corruptions, cross-script transliteration drift (Indic scripts $\leftrightarrow$ Latin), abbreviated addresses, legal suffix permutations, and unlinked distractor decoys.
-- **Target Scale:** Over $1.73 \times 10^{13}$ possible pairwise combinations, demanding sub-linear memory scaling and sub-quadratic blocking.
-- **Evaluation Metric:** Entity-Level Macro-Averaged $F_{0.5}$, penalizing false merges (precision errors) **four times more severely** than missed links (recall errors).
+- **Source 1 (S₁):** Master catalog containing 1.73M reference entities with complete name, address, and jurisdiction fields.
+- **Source 2 (S₂) & Source 3 (S₃):** 9.97M noisy observation records characterized by typographical corruptions, cross-script transliteration drift (Indic scripts ↔ Latin), abbreviated addresses, legal suffix permutations, and unlinked distractor decoys.
+- **Target Scale:** Over 1.73 × 10¹³ possible pairwise combinations, demanding sub-linear memory scaling and sub-quadratic blocking.
+- **Evaluation Metric:** Entity-Level Macro-Averaged F<sub>0.5</sub>, penalizing false merges (precision errors) **four times more severely** than missed links (recall errors).
 
 ---
 
@@ -45,7 +45,7 @@ Business Entity Resolution (ER) is the task of determining whether multiple comm
 
 The pipeline's progression from an early baseline score of **0.7530** to our final verified leaderboard score of **0.967915** was driven by five core technical breakthroughs:
 
-1. **Directional Query Inversion ($S_2/S_3 \to S_1$):** Conventional forward blocking ($S_1 \to S_2/S_3$) produces severe candidate queue congestion on popular corporate hubs. Inverting the search so each query record retrieves its top $K=10$ master catalog candidates bounds candidate volume to $\approx 13.5$ per $S_1$ while preventing true link drop-off.
+1. **Directional Query Inversion (S₂/S₃ → S₁):** Conventional forward blocking (S₁ → S₂/S₃) produces severe candidate queue congestion on popular corporate hubs. Inverting the search so each query record retrieves its top K = 10 master catalog candidates bounds candidate volume to ≈ 13.5 per S₁ while preventing true link drop-off.
 2. **Safe Rank-0 Retention:** Prevents candidate truncation by guaranteeing that a target record's #1 most similar catalog candidate is never pruned, recovering thousands of true links lost by naive fixed quotas.
 3. **Three-Tier Spelling & Noise Normalization:** Combines rule-based legal suffix standardization, learned spelling mappings mined from training pairs, and label-free token frequency lift detection to neutralize regional boilerplate.
 4. **Decoy Contrastive & Within-Record Relative Tiebreaks:** 61-dimensional feature engine includes house number differential arithmetic (`num_first_diff`), token decoy risk scores, and 14 within-record relative margin features (`*_qgap`, `*_qbest`) that contrast competing candidates for the same query.
@@ -98,16 +98,16 @@ flowchart TD
 ### Stage 1: Multi-Pass Text Normalization (`src/normalize.py`)
 - Standardizes Unicode representations via NFKC and strips alias preambles (`f/k/a`, `d/b/a`, `formerly`).
 - Normalizes legal forms (`Pvt Ltd`, `LLC`, `Corp`, `SARL`, `SAS`) and street designations (`st`, `blvd`, `ave`, `rd`, `rue`).
-- In training mode, mines high-frequency spelling corruptions from matched pairs (e.g. `praivet` $\to$ `private`, `sixth` $\to$ `6th`, `ciy` $\to$ `city`).
-- Computes token frequency lift in query records relative to catalog records; tokens with $>3.0\times$ name lift and $>10.0\times$ address lift are stripped as regional noise tokens.
-- Streams processing in 2M-row chunks to bound RAM to $< 3$ GB.
+- In training mode, mines high-frequency spelling corruptions from matched pairs (e.g. `praivet` → `private`, `sixth` → `6th`, `ciy` → `city`).
+- Computes token frequency lift in query records relative to catalog records; tokens with >3.0× name lift and >10.0× address lift are stripped as regional noise tokens.
+- Streams processing in 2M-row chunks to bound RAM to < 3 GB.
 
 ### Stage 2: Reverse TF-IDF & Exact-Key Blocking (`src/block.py`)
-- Inverts retrieval: query records ($q \in S_2 \cup S_3$) query the catalog ($s_1 \in S_1$).
+- Inverts retrieval: query records (q ∈ S₂ ∪ S₃) query the catalog (s₁ ∈ S₁).
 - Calculates joint sparse cosine similarity:
   $$\text{Score}(q, s_1) = 0.60 \cdot \text{Cosine}_{\text{name}}(q, s_1) + 0.40 \cdot \text{Cosine}_{\text{addr}}(q, s_1)$$
 - Evaluates 5 exact bitmask key passes: sorted name words, house number + primary street word, consonant skeleton, spacing-free name, and two-word name prefix.
-- Prunes candidates via relative thresholding ($\text{Score} \ge 0.80 \times \text{Top1}$), rank ceiling ($K \le 10$), catalog hub cap ($\text{Cap} \le 30$), and **safe rank-0 retention**.
+- Prunes candidates via relative thresholding (Score ≥ 0.80 × Top1), rank ceiling (K ≤ 10), catalog hub cap (Cap ≤ 30), and **safe rank-0 retention**.
 
 ### Stage 3: 61-Dimensional Pairwise Feature Extraction (`src/features.py`)
 - **Retrieval Signals (5):** TF-IDF rank, score, name cosine, address cosine, key match flags.
@@ -119,8 +119,8 @@ flowchart TD
 
 ### Stage 4: LightGBM Matching & Decision Logic (`src/match.py`)
 - High-capacity LightGBM Booster (449 trees, `num_leaves=511`, `learning_rate=0.05`).
-- **Argmax Target Exclusivity:** Sorts candidates by predicted probability and assigns each query $q$ strictly to its highest-scoring master entity.
-- **Optimal Decision Threshold ($\tau^* = 0.75$):** Reflects the 4:1 precision-to-recall penalty ratio of the Macro $F_{0.5}$ metric, maximizing competition score.
+- **Argmax Target Exclusivity:** Sorts candidates by predicted probability and assigns each query `q` strictly to its highest-scoring master entity.
+- **Optimal Decision Threshold (τ\* = 0.75):** Reflects the 4:1 precision-to-recall penalty ratio of the Macro F<sub>0.5</sub> metric, maximizing competition score.
 
 ---
 
@@ -128,8 +128,8 @@ flowchart TD
 
 | Pipeline Version | Official Leaderboard Score | Metric Description | Key Distinguishing Factor |
 | :--- | :---: | :---: | :--- |
-| **Final Production System** | **0.967915** | Macro $F_{0.5}$ | Reverse blocking, safe rank-0 retention, 61-D features, argmax exclusivity |
-| Historical Baseline System | **0.753000** | Macro $F_{0.5}$ | Forward blocking ($S_1 \to S_2/S_3$), FIFO candidate truncation, 152k collisions |
+| **Final Production System** | **0.967915** | Macro F<sub>0.5</sub> | Reverse blocking, safe rank-0 retention, 61-D features, argmax exclusivity |
+| Historical Baseline System | **0.753000** | Macro F<sub>0.5</sub> | Forward blocking (S₁ → S₂/S₃), FIFO candidate truncation, 152k collisions |
 
 ### Notes on Validation Discrepancy
 During iterative development, local cross-validation scores varied significantly depending on whether the negative candidate pool was restricted or unconstrained:

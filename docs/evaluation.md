@@ -1,13 +1,13 @@
 # Evaluation Metric & Mathematical Optimization
 
-**Challenge Metric:** Entity-Level Macro-Averaged $F_{0.5}$
-**Official Competition Leaderboard Score:** **0.967915** Macro $F_{0.5}$
+**Challenge Metric:** Entity-Level Macro-Averaged F<sub>0.5</sub>
+**Official Competition Leaderboard Score:** **0.967915** Macro F<sub>0.5</sub>
 
 ---
 
 ## 1. Metric Formulation
 
-The official evaluation metric for the Amazon ML Challenge 2026 is **Macro-Averaged $F_{0.5}$**, computed across all $N$ entities in Source 1:
+The official evaluation metric for the Amazon ML Challenge 2026 is **Macro-Averaged F<sub>0.5</sub>**, computed across all $N$ entities in Source 1:
 
 $$\text{Macro } F_{0.5} = \frac{1}{N} \sum_{i=1}^N F_{0.5}(S_i)$$
 
@@ -26,7 +26,7 @@ In the denominator:
 - Each **False Positive** (false merge) contributes $+1.0 \cdot \text{FP}$.
 - Each **False Negative** (missed match) contributes $+0.25 \cdot \text{FN}$.
 
-Consequently, a False Positive is penalized **$4\times$ as severely** as a False Negative in the per-entity objective function. Predicting a link with even moderate uncertainty degrades the macro score.
+Consequently, a False Positive is penalized **4× as severely** as a False Negative in the per-entity objective function. Predicting a link with even moderate uncertainty degrades the macro score.
 
 ### 2. The Singleton All-or-Nothing Cliff
 Entities with zero true matches in Source 2 or Source 3 (singletons) constitute $\approx 5.8\% - 6.3\%$ of the master catalog:
@@ -38,12 +38,12 @@ Predicting a single spurious candidate link for a true singleton drops its score
 
 ## 3. Threshold Optimization Dynamics
 
-Because Macro $F_{0.5}$ weights precision heavily, conventional balanced classification thresholds ($\tau = 0.50$) are sub-optimal:
+Because Macro F<sub>0.5</sub> weights precision heavily, conventional balanced classification thresholds (τ = 0.50) are sub-optimal:
 
-- **Low Thresholds ($\tau \le 0.50$):** High candidate recall is achieved, but false positive links degrade both multi-match entity scores and convert singletons from 1.0 to 0.0.
-- **Moderate Thresholds ($\tau \approx 0.60 - 0.70$):** Reduces false merges significantly while capturing clear name and address matches.
-- **Calibrated High Threshold ($\tau^* = 0.75$):** Optimizes the 4:1 precision-recall trade-off against the high density of unlinked distractors and synthetic decoys present in large-scale target pools.
-- **Overly Conservative Thresholds ($\tau \ge 0.85$):** Severe recall degradation outpaces precision gains, as legitimate matches with slight spelling variations are discarded.
+- **Low Thresholds (τ ≤ 0.50):** High candidate recall is achieved, but false positive links degrade both multi-match entity scores and convert singletons from 1.0 to 0.0.
+- **Moderate Thresholds (τ ≈ 0.60 - 0.70):** Reduces false merges significantly while capturing clear name and address matches.
+- **Calibrated High Threshold (τ\* = 0.75):** Optimizes the 4:1 precision-recall trade-off against the high density of unlinked distractors and synthetic decoys present in large-scale target pools.
+- **Overly Conservative Thresholds (τ ≥ 0.85):** Severe recall degradation outpaces precision gains, as legitimate matches with slight spelling variations are discarded.
 
 ---
 
