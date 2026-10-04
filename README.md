@@ -55,6 +55,37 @@ The pipeline's progression from an early baseline score of **0.7530** to our fin
 
 ## 3. System Architecture
 
+The pipeline processes data through a streaming, disk-checkpointed architecture where every stage runs within strict memory bounds (< 3.0 GB RAM):
+
+```
+Input Data (dataset/train, dataset/test)
+  │
+  ▼
+Stage 1: Multi-Pass Text Normalization (src/normalize.py)
+  │
+  ├── [Auxiliary: Synthetic Decoy Augmentation (src/synth.py) — Train Only]
+  ▼
+Stage 2: Reverse TF-IDF & Exact-Key Blocking (src/block.py)
+  │
+  ▼
+Stage 3: 61-Dimensional Pairwise Feature Extraction (src/features.py)
+  │
+  ▼
+Stage 4: LightGBM Matching & Argmax Exclusivity (src/match.py)
+  │
+  ├── [Auxiliary: Second-Stage Context Stacking (src/stack.py) — Optional]
+  ▼
+Stage 5: Test Inference Coordination (scripts/run_inference.py)
+  │
+  ▼
+Submission Artifacts (output/matching_results.tsv, output/candidate_pairs.tsv)
+  │
+  ▼
+Stage 6: Official Format Validation Gate (scripts/validate_submission.py)
+```
+
+### End-to-End Pipeline Diagram
+
 ```mermaid
 flowchart TD
     subgraph Data ["Data Ingestion"]
@@ -63,11 +94,11 @@ flowchart TD
         S3["Source 3 (Noisy Observations)"]
     end
 
-    subgraph Stage1 ["Stage 1: Multi-Pass Text Normalization"]
+    subgraph Stage1 ["Stage 1: Text Normalization"]
         Norm["src/normalize.py<br/>• Unicode NFKC & Rule Standardization<br/>• Dynamic Spelling Correction Learning<br/>• Noise Token Frequency Lift Detection"]
     end
 
-    subgraph Stage2 ["Stage 2: Reverse TF-IDF & Exact-Key Blocking"]
+    subgraph Stage2 ["Stage 2: Reverse Blocking & Pruning"]
         Block["src/block.py<br/>• Reverse Search: (S2 ∪ S3) -> S1 (Top-10)<br/>• Joint Cosine: 0.60 Name + 0.40 Addr<br/>• 5 Exact Bitmask Keys<br/>• Pruner: REL=0.80, Safe Rank-0 Retention, CAP=30"]
     end
 
@@ -76,20 +107,26 @@ flowchart TD
     end
 
     subgraph Stage4 ["Stage 4: LightGBM Matching & Decision Logic"]
-        Match["src/match.py<br/>• 449-Tree LightGBM Booster<br/>• Argmax Target Exclusivity (unique 'q')<br/>• Macro F0.5 Calibrated Threshold (tau = 0.75)"]
+        Match["src/match.py<br/>• 449-Tree LightGBM Booster<br/>• Argmax Target Exclusivity (unique 'q')<br/>• Calibrated Threshold (tau* = 0.75)"]
     end
 
-    subgraph Output ["Submission Artifacts"]
+    subgraph Stage5 ["Stage 5 & 6: Inference Orchestration & Validation"]
+        Runner["scripts/run_inference.py<br/>• End-to-End Test Execution Coordinator"]
         MTSV["matching_results.tsv"]
         CTSV["candidate_pairs.tsv"]
+        Val["scripts/validate_submission.py<br/>• Format & Integrity Validator"]
     end
 
     S1 & S2 & S3 --> Norm
     Norm --> Block
     Block --> Feats
     Feats --> Match
-    Match --> MTSV & CTSV
+    Match --> Runner
+    Runner --> MTSV & CTSV
+    MTSV & CTSV --> Val
 ```
+
+*For complete technical design, mathematical formulations, and component walkthroughs, see [`docs/architecture.md`](file:///docs/architecture.md).*
 
 ---
 
@@ -198,6 +235,14 @@ amazon-ml-challenge-2026/
         ├── exp_01_calibration_and_decoder.py
         └── test_expected_f05_decoder.py
 ```
+
+### Repository Architecture
+
+The codebase is organized into four distinct functional tiers:
+- **`src/` (Authoritative ML Pipeline):** Core modular implementations of the active pipeline stages: streaming multi-pass text normalization (`normalize.py`), reverse TF-IDF blocking and safe candidate pruning (`block.py`), 61-dimensional pairwise feature extraction (`features.py`), LightGBM training and argmax decision decoding (`match.py`), synthetic hard negative generation (`synth.py`), and second-stage contextual stacking (`stack.py`).
+- **`scripts/` (Operational CLIs & Validation):** Executable drivers for pipeline coordination and quality assurance: the end-to-end test inference orchestrator (`run_inference.py`), the official zero-dependency submission format and integrity validator (`validate_submission.py`), and the streaming O(1) memory dataset profiler (`eda_autopsy.py`).
+- **`experiments/` (Empirical Research & Audits):** Self-contained research logs, historical baselines, and ablation studies: the archived initial forward-blocking baseline with failure autopsy (`baseline/`), post-processing experiments evaluating isotonic calibration and dynamic programming decoders (`calibration/`), and production training metadata, feature gains, and configuration audits (`final_run/`).
+- **`docs/` (Engineering Documentation):** Deep-dive technical specifications: authoritative system architecture design (`docs/architecture.md`), baseline-to-production evolutionary methodology (`docs/methodology.md`), mathematical formulations of Macro F<sub>0.5</sub> and singleton dynamics (`docs/evaluation.md`), and categorical failure mode analysis (`docs/error_analysis.md`).
 
 ---
 
