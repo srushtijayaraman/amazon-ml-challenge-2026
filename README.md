@@ -6,7 +6,7 @@
 An end-to-end, high-performance machine learning pipeline for large-scale **Business Entity Resolution** developed for the **Amazon ML Challenge 2026**.
 
 **Final Competition Leaderboard Score:** **0.967915** Macro F<sub>0.5</sub>
-*(Official evaluation metric: Entity-Level Macro-Averaged F<sub>0.5</sub> ; this represents the competition leaderboard result, not model accuracy)*
+*(Official evaluation metric: Entity-Level Macro-Averaged F<sub>0.5</sub>; this represents the competition leaderboard result, not model accuracy)*
 
 The system resolves millions of noisy, multilingual commercial records across three heterogeneous data sources under strict memory and runtime constraints, eliminating candidate truncation and cross-entity collisions by mathematical construction.
 
