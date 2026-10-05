@@ -17,6 +17,21 @@ It validates two files:
   your candidates and *warns* (never fails) otherwise. When absent it is skipped
   with a warning; it is still expected in your final submission zip.
 
+Checks performed:
+  1. Input/submission file existence and accessibility (not a directory).
+  2. Tab-separated delimiter structure (flags comma-separated CSV mistakes).
+  3. Column headers (source1_entity_id, matched_entity_ids / candidate_entity_ids).
+  4. Non-empty submission (rejects 0-byte and header-only files).
+  5. Exact row field counts (flags missing or extra tab columns).
+  6. Source 1 entity ID integrity (non-blank, no quotes, no duplicate rows).
+  7. Prediction value formatting (comma-separated S2-/S3- prefixed IDs, no self-matches).
+  8. Missing/null representations (empty string required; literal null/NaN rejected).
+  9. Clean ID tokens (flags empty tokens, quotes, and whitespace in IDs).
+ 10. Completeness against test_source1.tsv (all required entities present, no unexpected IDs).
+ 11. Subset integrity (matched IDs must be a subset of candidate IDs).
+ 12. Target exclusivity check (warns on duplicate query assignments in matching results).
+ 13. Optional ID existence against test_source2/3.tsv (--check-ids).
+
 Stdlib only, Python 3.8+. Run from the repository root directory::
 
     python scripts/validate_submission.py \
@@ -26,17 +41,6 @@ Stdlib only, Python 3.8+. Run from the repository root directory::
 
 Exit code 0 means the files are safe to submit; 1 means fix the listed issues
 (warnings never fail the run).
-
-ID-existence check (off by default). By default the validator does NOT check that
-every matched/candidate ID actually exists in the test set: that check loads all
-Source-2/3 IDs into memory, which on the full ~1.7M-entity test set costs a few GB
-(more when ``candidate_pairs.tsv`` is included). The default run therefore stays fast
-and light and verifies every other rule; it prints a warning noting the check was
-skipped. Pass ``--check-ids`` to turn it on (it reads ``test_source2.tsv`` /
-``test_source3.tsv`` from ``--test-dir``); a missing/garbage matched ID only lowers
-your score rather than being rejected by the scorer, so this check is a diagnostic,
-not a gate. If ``--check-ids`` runs out of memory, drop ``--candidate`` (the candidate
-cross-check is the biggest memory user, and the matching file is the only one scored).
 """
 
 import argparse
@@ -47,6 +51,7 @@ DELIM = "\t"
 MAX_EXAMPLES = 5  # how many offending IDs to show per issue
 MATCHING_HEADER = ["source1_entity_id", "matched_entity_ids"]
 CANDIDATE_HEADER = ["source1_entity_id", "candidate_entity_ids"]
+NULL_LITERALS = {"nan", "null", "none", "na", "<null>", "undefined"}
 
 
 def read_ids(path):
@@ -54,17 +59,21 @@ def read_ids(path):
 
     The header row is skipped and blank lines are ignored.
     """
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8-sig") as f:
         next(f, None)  # skip header
-        return {line.split(DELIM, 1)[0].strip() for line in f if line.strip()}
+        return {
+            line.split(DELIM, 1)[0].strip()
+            for line in f
+            if line.strip() and line.split(DELIM, 1)[0].strip()
+        }
 
 
 def examples(items):
     """Return a short, human-readable sample of ``items`` for an error message."""
-    items = sorted(items)
-    shown = ", ".join(items[:MAX_EXAMPLES])
-    if len(items) > MAX_EXAMPLES:
-        return f"{len(items)} total, e.g. {shown}, ..."
+    items_list = sorted(str(x) for x in items)
+    shown = ", ".join(items_list[:MAX_EXAMPLES])
+    if len(items_list) > MAX_EXAMPLES:
+        return f"{len(items_list)} total, e.g. {shown}, ..."
     return shown
 
 
@@ -91,27 +100,45 @@ def load_match_targets(test_dir, warnings):
     return targets
 
 
-def validate_id_list_file(path, expected_header, col_label, required, valid_ids, errors):
+def validate_id_list_file(path, expected_header, col_label, required, valid_ids, errors, warnings=None):
     """Validate one results-style TSV (matching or candidate).
 
     Applies the shared formatting rules and appends any problems to ``errors``.
     Returns a ``{source1_id: set(matched/candidate ids)}`` mapping, or ``None`` on a
     fatal problem (missing file, empty file, or a broken header) that stops parsing.
     """
-    if not os.path.isfile(path):
+    if not os.path.exists(path):
         errors.append(f"File not found: {path}")
+        return None
+    if os.path.isdir(path):
+        errors.append(f"Expected a file but found a directory: {path}")
         return None
 
     name = os.path.basename(path)
     mapping = {}
-    seen, dup_rows, intra_dupes = set(), set(), set()
-    self_matches, wrong_prefix, unknown = set(), set(), set()
-    n_rows = empties = 0
+    seen = set()
+    dup_rows = set()
+    intra_dupes = set()
+    self_matches = set()
+    wrong_prefix = set()
+    unknown = set()
+    blank_s1 = set()
+    null_literals = set()
+    empty_tokens = set()
+    quoted_tokens = set()
+    whitespace_tokens = set()
+    malformed_rows = []
+    extra_col_rows = []
+    n_rows = 0
+    empties = 0
+    total_predictions = 0
+    target_to_s1 = {}
+    query_collisions = set()
 
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8-sig") as f:
         header = f.readline()
         if not header:
-            errors.append(f"{name} is empty.")
+            errors.append(f"{name} is empty (0 bytes).")
             return None
         if DELIM not in header and "," in header:  # the #1 mistake: a CSV
             errors.append(
@@ -120,7 +147,7 @@ def validate_id_list_file(path, expected_header, col_label, required, valid_ids,
                 "write it with df.to_csv(sep='\\t', index=False)."
             )
             return None
-        cols = [c.strip().lower() for c in header.rstrip("\n").split(DELIM)]
+        cols = [c.strip().lower() for c in header.rstrip("\r\n").split(DELIM)]
         if cols != expected_header:
             errors.append(
                 f"{name}: unexpected header {cols}. "
@@ -129,29 +156,68 @@ def validate_id_list_file(path, expected_header, col_label, required, valid_ids,
             return None
 
         for line_num, line in enumerate(f, start=2):
-            s1, tab, rest = line.partition(DELIM)
-            if not tab:
-                if s1.strip():
-                    errors.append(
-                        f"{name}: malformed row (no tab) at line {line_num}: "
-                        f"{line.rstrip()!r}"
-                    )
+            raw_line = line.rstrip("\r\n")
+            if not raw_line.strip():
+                continue  # skip blank lines
+
+            parts = raw_line.split(DELIM)
+            if len(parts) < 2:
+                malformed_rows.append(f"line {line_num} (no tab delimiter): {raw_line!r}")
+                continue
+            elif len(parts) > 2:
+                extra_col_rows.append(f"line {line_num} ({len(parts)} fields)")
                 continue
 
+            s1, rest = parts[0], parts[1]
             n_rows += 1
+
+            s1_clean = s1.strip()
+            if not s1_clean:
+                blank_s1.add(f"line {line_num}")
+                continue
+            if s1 != s1_clean or '"' in s1 or "'" in s1:
+                quoted_tokens.add(s1)
+
             if s1 in seen:
                 dup_rows.add(s1)
             seen.add(s1)
 
-            ids = rest.rstrip("\n").split(",") if rest.strip() else []
-            if not ids:
+            rest_trimmed = rest.strip()
+            if not rest_trimmed:
                 empties += 1
                 mapping[s1] = set()
                 continue
+
+            # Detect null/NaN literal strings instead of clean blank matches
+            if rest_trimmed.lower() in NULL_LITERALS:
+                null_literals.add(f"{s1} (value={rest_trimmed!r})")
+                mapping[s1] = set()
+                continue
+
+            raw_ids = rest_trimmed.split(",")
+            ids = []
+            has_empty_token = False
+            for tok in raw_ids:
+                tok_clean = tok.strip()
+                if not tok_clean:
+                    has_empty_token = True
+                    continue
+                if tok != tok_clean or " " in tok_clean:
+                    whitespace_tokens.add(tok)
+                if '"' in tok_clean or "'" in tok_clean:
+                    quoted_tokens.add(tok_clean)
+                ids.append(tok_clean.strip('"').strip("'"))
+
+            if has_empty_token:
+                empty_tokens.add(s1)
+
             if len(ids) != len(set(ids)):
                 intra_dupes.add(s1)
+
             id_set = set(ids)
             mapping[s1] = id_set
+            total_predictions += len(id_set)
+
             for mid in id_set:
                 if mid.startswith("S1-"):
                     self_matches.add(mid)
@@ -160,9 +226,51 @@ def validate_id_list_file(path, expected_header, col_label, required, valid_ids,
                 elif valid_ids is not None and mid not in valid_ids:
                     unknown.add(mid)
 
+                # Soft target exclusivity collision check for matching results
+                if warnings is not None and col_label == "matched_entity_ids":
+                    if mid in target_to_s1 and target_to_s1[mid] != s1:
+                        query_collisions.add(mid)
+                    else:
+                        target_to_s1[mid] = s1
+
+    # Check for empty data rows
+    if n_rows == 0:
+        errors.append(f"{name}: file contains a valid header but 0 data rows.")
+        return None
+
     # Aggregate the per-category findings. Each entry is (offenders, message);
     # only non-empty categories become errors.
     findings = [
+        (
+            malformed_rows,
+            "{name}: malformed row(s) missing tab delimiter at {ex}.",
+        ),
+        (
+            extra_col_rows,
+            "{name}: row(s) contain unexpected extra tab fields (expected exactly 2) at {ex}.",
+        ),
+        (
+            blank_s1,
+            "{name}: blank or whitespace source1_entity_id at {ex}.",
+        ),
+        (
+            null_literals,
+            "{name}: {col} contains null/NaN literal strings: {ex}. "
+            "Empty matches must be represented by an empty string after the tab.",
+        ),
+        (
+            empty_tokens,
+            "{name}: {col} contains empty ID tokens (consecutive, leading, or trailing commas) for S1 ID(s): {ex}.",
+        ),
+        (
+            quoted_tokens,
+            "{name}: identifiers contain quotes or wrapped formatting: {ex}. "
+            "Submissions must contain raw unquoted strings.",
+        ),
+        (
+            whitespace_tokens,
+            "{name}: {col} contains IDs with whitespace: {ex}.",
+        ),
         (
             dup_rows,
             "{name}: duplicate source1_entity_id row(s): {ex}. "
@@ -184,24 +292,32 @@ def validate_id_list_file(path, expected_header, col_label, required, valid_ids,
         ),
         (
             unknown,
-            "{name}: {col} references IDs not in the test "
-            "Source-2/3 files: {ex}.",
+            "{name}: {col} references IDs not in the test Source-2/3 files: {ex}.",
         ),
         (
-            required - seen,
+            (required - seen) if required else set(),
             "{name}: required S1 entity(ies) missing: {ex}. "
             "Every entity in test_source1.tsv needs a row (empty = no match).",
         ),
         (
-            seen - required,
+            (seen - required) if required else set(),
             "{name}: row(s) using an S1 ID that is not in the test set: {ex}.",
         ),
     ]
+
     for offenders, message in findings:
         if offenders:
             errors.append(message.format(name=name, ex=examples(offenders), col=col_label))
 
-    print(f"  {name}: {n_rows} rows ({empties} empty, {n_rows - empties} non-empty).")
+    if query_collisions and warnings is not None:
+        warnings.append(
+            f"{name}: {len(query_collisions)} target record(s) assigned to multiple "
+            f"S1 entities (cross-entity collision), e.g. {examples(query_collisions)}. "
+            "Target records should link to at most one master entity to prevent severe precision penalties."
+        )
+
+    term = "matches" if col_label == "matched_entity_ids" else "candidates"
+    print(f"  {name}: {n_rows} rows ({empties} empty, {n_rows - empties} with {term}, {total_predictions} total {term}).")
     return mapping
 
 
@@ -216,27 +332,35 @@ def validate(matching_path, candidate_path, test_dir, check_ids=False):
 
     source1 = os.path.join(test_dir, "test_source1.tsv")
     if not os.path.isfile(source1):
-        errors.append(f"Test source1 file not found: {source1} (check --test-dir).")
-        return errors, warnings
-    required = read_ids(source1)
-    print(f"  required S1 entities: {len(required)}")
+        errors.append(
+            f"Test source1 file not found: {source1} (check --test-dir). "
+            "Required S1 entity completeness check skipped."
+        )
+        required = set()
+    else:
+        required = read_ids(source1)
+        if not required:
+            errors.append(f"{source1} is empty (0 entity IDs found).")
+        else:
+            print(f"  required S1 entities: {len(required)}")
 
-    if check_ids:
+    if check_ids and os.path.isfile(source1):
         valid_ids = load_match_targets(test_dir, warnings)
         if valid_ids is not None:
             print(f"  valid S2/S3 match IDs: {len(valid_ids)}")
     else:
         valid_ids = None
-        warnings.append(
-            "ID-existence check is OFF (the default) — not checking that matched/"
-            "candidate IDs exist in the test set. Every other rule is still checked. "
-            "Re-run with --check-ids to enable it (needs test_source2/3.tsv; uses "
-            "more memory). A nonexistent ID only lowers your score, never rejects "
-            "your submission."
-        )
+        if not check_ids:
+            warnings.append(
+                "ID-existence check is OFF (the default) — not checking that matched/"
+                "candidate IDs exist in the test set. Every other rule is still checked. "
+                "Re-run with --check-ids to enable it (needs test_source2/3.tsv; uses "
+                "more memory). A nonexistent ID only lowers your score, never rejects "
+                "your submission."
+            )
 
     matched = validate_id_list_file(
-        matching_path, MATCHING_HEADER, "matched_entity_ids", required, valid_ids, errors
+        matching_path, MATCHING_HEADER, "matched_entity_ids", required, valid_ids, errors, warnings
     )
 
     # candidate_pairs.tsv is optional: if it's absent we skip its checks with a
@@ -246,7 +370,7 @@ def validate(matching_path, candidate_path, test_dir, check_ids=False):
     if candidate_path and os.path.isfile(candidate_path):
         candidate = validate_id_list_file(
             candidate_path, CANDIDATE_HEADER, "candidate_entity_ids",
-            required, valid_ids, errors,
+            required, valid_ids, errors, warnings
         )
     elif candidate_path:
         warnings.append(
@@ -259,6 +383,13 @@ def validate(matching_path, candidate_path, test_dir, check_ids=False):
     # A matched ID absent from candidate_pairs.tsv usually means a pipeline bug,
     # so we warn but never fail on it.
     if matched is not None and candidate is not None:
+        missing_cands_s1 = set(matched.keys()) - set(candidate.keys())
+        if missing_cands_s1:
+            warnings.append(
+                f"candidate_pairs.tsv is missing {len(missing_cands_s1)} S1 entities "
+                f"present in matching_results.tsv, e.g. {examples(missing_cands_s1)}."
+            )
+
         offenders = {
             s1 for s1, mids in matched.items() if mids - candidate.get(s1, set())
         }
