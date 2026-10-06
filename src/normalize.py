@@ -79,38 +79,61 @@ STOP = {_collapse(w) for w in NAME_STOP}
 
 MAPS = {"name": {}, "addr": {}}
 NOISE = {}
+_NULL_STRINGS = {"none", "n/a", "null", "nan", "undefined"}
 
 
 def _base(s):
+    if not isinstance(s, str):
+        if s is None or (isinstance(s, float) and (s != s)):
+            return ""
+        s = str(s)
     return (s if s.isascii() else unidecode(s)).lower()
 
 
 def name_tokens(s):
     if not s:
         return ""
-    m = ALIAS.match(s)
-    if m and s[m.end():].strip():
-        s = s[m.end():]
-    s = _base(s)
-    s = re.sub(r"\bwww\.|\.(com|net|org|in|co|fr|us|biz|info)\b|@", " ", s)
-    s = re.sub(r"\d{6,}", " ", s)
-    s = s.replace("&", " and ")
-    s = re.sub(r"[.'`]", "", s)
-    return " ".join(_collapse(t) for t in re.sub(r"[^a-z0-9]+", " ", s).split())
+    if not isinstance(s, str):
+        if isinstance(s, float) and (s != s):  # NaN
+            return ""
+        s = str(s)
+    s_clean = s.strip()
+    if not s_clean or s_clean.lower() in _NULL_STRINGS:
+        return ""
+    m = ALIAS.match(s_clean)
+    if m and s_clean[m.end():].strip():
+        s_clean = s_clean[m.end():]
+    s_clean = _base(s_clean)
+    s_clean = re.sub(r"\bwww\.|\.(com|net|org|in|co|fr|us|biz|info)\b|@", " ", s_clean)
+    s_clean = re.sub(r"\d{6,}", " ", s_clean)
+    s_clean = s_clean.replace("&", " and ")
+    s_clean = re.sub(r"[.'`]", "", s_clean)
+    return " ".join(_collapse(t) for t in re.sub(r"[^a-z0-9]+", " ", s_clean).split())
 
 
 def addr_tokens(s):
-    if not s or s in ("None", "N/A"):
+    if not s:
         return ""
-    s = _base(s)
-    s = re.sub(r"\bn/a\b|\bndeg", " ", s)
-    s = re.sub(r"[^a-z0-9]+", " ", s)
-    s = re.sub(r"\b0+(\d)", r"\1", s)
-    s = _PHRASE_RE.sub(lambda m: ADDR_PHRASES[m.group(1)], s)
-    return " ".join(ADDR_ABBR.get(t, t) for t in s.split() if t not in ("none", "na"))
+    if not isinstance(s, str):
+        if isinstance(s, float) and (s != s):  # NaN
+            return ""
+        s = str(s)
+    s_clean = s.strip()
+    if not s_clean or s_clean.lower() in _NULL_STRINGS:
+        return ""
+    s_clean = _base(s_clean)
+    s_clean = re.sub(r"\bn/a\b|\bndeg", " ", s_clean)
+    s_clean = re.sub(r"[^a-z0-9]+", " ", s_clean)
+    s_clean = re.sub(r"\b0+(\d)", r"\1", s_clean)
+    s_clean = _PHRASE_RE.sub(lambda m: ADDR_PHRASES[m.group(1)], s_clean)
+    return " ".join(ADDR_ABBR.get(t, t) for t in s_clean.split() if t not in ("none", "na"))
 
 
 def finish(tokens, kind, country):
+    if not tokens:
+        return ""
+    if not isinstance(tokens, str):
+        tokens = str(tokens)
     stop = STOP if kind == "name" else set()
     noise = NOISE.get(country, {}).get(kind, set())
     toks = [MAPS[kind].get(t, t) for t in tokens.split()]
@@ -289,11 +312,20 @@ if __name__ == "__main__":
     assert addr_tokens("12 MG Road, Chennai, Tamil Nadu") == "12 mg rd chennai tn"
     assert addr_tokens("N°3 Rue Kant") == "3 rue kant"
     assert addr_tokens("None") == ""
+    # Edge-case robustness assertions
+    assert name_tokens(None) == ""
+    assert name_tokens(float("nan")) == ""
+    assert name_tokens("None") == ""
+    assert name_tokens("   ") == ""
+    assert addr_tokens(None) == ""
+    assert addr_tokens(float("nan")) == ""
+    assert finish(None, "name", "US") == ""
+    assert finish("", "name", "US") == ""
 
     os.makedirs(WORK, exist_ok=True)
     gt_path = f"{DATA}/train/train_ground_truth.tsv"
     if not os.path.exists(gt_path):
-        print("Self-tests passed: all 12 normalization assertions verified.")
+        print("Self-tests passed: all normalization assertions verified (including edge-cases).")
         print(f"Notice: Ground truth dataset not found at '{gt_path}'.")
         print(f"To run normalization on competition data, place dataset files under '{DATA}/train' and '{DATA}/test'.")
         sys.exit(0)
