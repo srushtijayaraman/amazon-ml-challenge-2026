@@ -41,6 +41,17 @@ Stdlib only, Python 3.8+. Run from the repository root directory::
 
 Exit code 0 means the files are safe to submit; 1 means fix the listed issues
 (warnings never fail the run).
+
+ID-existence check (off by default). By default the validator does NOT check that
+every matched/candidate ID actually exists in the test set: that check loads all
+Source-2/3 IDs into memory, which on the full ~1.7M-entity test set costs a few GB
+(more when ``candidate_pairs.tsv`` is included). The default run therefore stays fast
+and light and verifies every other rule; it prints a warning noting the check was
+skipped. Pass ``--check-ids`` to turn it on (it reads ``test_source2.tsv`` /
+``test_source3.tsv`` from ``--test-dir``); a missing/garbage matched ID only lowers
+your score rather than being rejected by the scorer, so this check is a diagnostic,
+not a gate. If ``--check-ids`` runs out of memory, drop ``--candidate`` (the candidate
+cross-check is the biggest memory user, and the matching file is the only one scored).
 """
 
 import argparse
@@ -59,8 +70,10 @@ def read_ids(path):
 
     The header row is skipped and blank lines are ignored.
     """
+    with open(path, encoding="utf-8") as f:
     with open(path, encoding="utf-8-sig") as f:
         next(f, None)  # skip header
+        return {line.split(DELIM, 1)[0].strip() for line in f if line.strip()}
         return {
             line.split(DELIM, 1)[0].strip()
             for line in f
@@ -70,6 +83,10 @@ def read_ids(path):
 
 def examples(items):
     """Return a short, human-readable sample of ``items`` for an error message."""
+    items = sorted(items)
+    shown = ", ".join(items[:MAX_EXAMPLES])
+    if len(items) > MAX_EXAMPLES:
+        return f"{len(items)} total, e.g. {shown}, ..."
     items_list = sorted(str(x) for x in items)
     shown = ", ".join(items_list[:MAX_EXAMPLES])
     if len(items_list) > MAX_EXAMPLES:
@@ -100,6 +117,7 @@ def load_match_targets(test_dir, warnings):
     return targets
 
 
+def validate_id_list_file(path, expected_header, col_label, required, valid_ids, errors):
 def validate_id_list_file(path, expected_header, col_label, required, valid_ids, errors, warnings=None):
     """Validate one results-style TSV (matching or candidate).
 
@@ -107,6 +125,7 @@ def validate_id_list_file(path, expected_header, col_label, required, valid_ids,
     Returns a ``{source1_id: set(matched/candidate ids)}`` mapping, or ``None`` on a
     fatal problem (missing file, empty file, or a broken header) that stops parsing.
     """
+    if not os.path.isfile(path):
     if not os.path.exists(path):
         errors.append(f"File not found: {path}")
         return None
@@ -116,6 +135,9 @@ def validate_id_list_file(path, expected_header, col_label, required, valid_ids,
 
     name = os.path.basename(path)
     mapping = {}
+    seen, dup_rows, intra_dupes = set(), set(), set()
+    self_matches, wrong_prefix, unknown = set(), set(), set()
+    n_rows = empties = 0
     seen = set()
     dup_rows = set()
     intra_dupes = set()
@@ -135,9 +157,11 @@ def validate_id_list_file(path, expected_header, col_label, required, valid_ids,
     target_to_s1 = {}
     query_collisions = set()
 
+    with open(path, encoding="utf-8") as f:
     with open(path, encoding="utf-8-sig") as f:
         header = f.readline()
         if not header:
+            errors.append(f"{name} is empty.")
             errors.append(f"{name} is empty (0 bytes).")
             return None
         if DELIM not in header and "," in header:  # the #1 mistake: a CSV
@@ -147,6 +171,7 @@ def validate_id_list_file(path, expected_header, col_label, required, valid_ids,
                 "write it with df.to_csv(sep='\\t', index=False)."
             )
             return None
+        cols = [c.strip().lower() for c in header.rstrip("\n").split(DELIM)]
         cols = [c.strip().lower() for c in header.rstrip("\r\n").split(DELIM)]
         if cols != expected_header:
             errors.append(
@@ -156,6 +181,13 @@ def validate_id_list_file(path, expected_header, col_label, required, valid_ids,
             return None
 
         for line_num, line in enumerate(f, start=2):
+            s1, tab, rest = line.partition(DELIM)
+            if not tab:
+                if s1.strip():
+                    errors.append(
+                        f"{name}: malformed row (no tab) at line {line_num}: "
+                        f"{line.rstrip()!r}"
+                    )
             raw_line = line.rstrip("\r\n")
             if not raw_line.strip():
                 continue  # skip blank lines
@@ -182,6 +214,8 @@ def validate_id_list_file(path, expected_header, col_label, required, valid_ids,
                 dup_rows.add(s1)
             seen.add(s1)
 
+            ids = rest.rstrip("\n").split(",") if rest.strip() else []
+            if not ids:
             rest_trimmed = rest.strip()
             if not rest_trimmed:
                 empties += 1
@@ -292,14 +326,18 @@ def validate_id_list_file(path, expected_header, col_label, required, valid_ids,
         ),
         (
             unknown,
+            "{name}: {col} references IDs not in the test "
+            "Source-2/3 files: {ex}.",
             "{name}: {col} references IDs not in the test Source-2/3 files: {ex}.",
         ),
         (
+            required - seen,
             (required - seen) if required else set(),
             "{name}: required S1 entity(ies) missing: {ex}. "
             "Every entity in test_source1.tsv needs a row (empty = no match).",
         ),
         (
+            seen - required,
             (seen - required) if required else set(),
             "{name}: row(s) using an S1 ID that is not in the test set: {ex}.",
         ),
@@ -309,6 +347,7 @@ def validate_id_list_file(path, expected_header, col_label, required, valid_ids,
         if offenders:
             errors.append(message.format(name=name, ex=examples(offenders), col=col_label))
 
+    print(f"  {name}: {n_rows} rows ({empties} empty, {n_rows - empties} non-empty).")
     if query_collisions and warnings is not None:
         warnings.append(
             f"{name}: {len(query_collisions)} target record(s) assigned to multiple "
@@ -332,6 +371,10 @@ def validate(matching_path, candidate_path, test_dir, check_ids=False):
 
     source1 = os.path.join(test_dir, "test_source1.tsv")
     if not os.path.isfile(source1):
+        errors.append(f"Test source1 file not found: {source1} (check --test-dir).")
+        return errors, warnings
+    required = read_ids(source1)
+    print(f"  required S1 entities: {len(required)}")
         errors.append(
             f"Test source1 file not found: {source1} (check --test-dir). "
             "Required S1 entity completeness check skipped."
@@ -344,12 +387,20 @@ def validate(matching_path, candidate_path, test_dir, check_ids=False):
         else:
             print(f"  required S1 entities: {len(required)}")
 
+    if check_ids:
     if check_ids and os.path.isfile(source1):
         valid_ids = load_match_targets(test_dir, warnings)
         if valid_ids is not None:
             print(f"  valid S2/S3 match IDs: {len(valid_ids)}")
     else:
         valid_ids = None
+        warnings.append(
+            "ID-existence check is OFF (the default) — not checking that matched/"
+            "candidate IDs exist in the test set. Every other rule is still checked. "
+            "Re-run with --check-ids to enable it (needs test_source2/3.tsv; uses "
+            "more memory). A nonexistent ID only lowers your score, never rejects "
+            "your submission."
+        )
         if not check_ids:
             warnings.append(
                 "ID-existence check is OFF (the default) — not checking that matched/"
@@ -360,6 +411,7 @@ def validate(matching_path, candidate_path, test_dir, check_ids=False):
             )
 
     matched = validate_id_list_file(
+        matching_path, MATCHING_HEADER, "matched_entity_ids", required, valid_ids, errors
         matching_path, MATCHING_HEADER, "matched_entity_ids", required, valid_ids, errors, warnings
     )
 
@@ -370,6 +422,7 @@ def validate(matching_path, candidate_path, test_dir, check_ids=False):
     if candidate_path and os.path.isfile(candidate_path):
         candidate = validate_id_list_file(
             candidate_path, CANDIDATE_HEADER, "candidate_entity_ids",
+            required, valid_ids, errors,
             required, valid_ids, errors, warnings
         )
     elif candidate_path:

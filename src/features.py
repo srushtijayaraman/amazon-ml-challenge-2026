@@ -49,8 +49,8 @@ def string_feats(c):
     ).with_columns(
         num_q=pl.col("ad_q").str.extract_all(NUM).list.unique(),
         num_s=pl.col("ad_s").str.extract_all(NUM).list.unique(),
-        tok_q=pl.col("nm_q").str.split(" ").list.unique(),
-        tok_s=pl.col("nm_s").str.split(" ").list.unique(),
+        tok_q=pl.col("nm_q").str.extract_all(r"[^ ]+").list.unique(),
+        tok_s=pl.col("nm_s").str.extract_all(r"[^ ]+").list.unique(),
     ).with_columns(
         num_inter=pl.col("num_q").list.set_intersection("num_s").list.len(),
         num_union=pl.col("num_q").list.set_union("num_s").list.len(),
@@ -327,6 +327,21 @@ if __name__ == "__main__":
     assert name_tokens("internationalforteanimation.com") == "internationalforteanimation"
     assert finish(name_tokens("Fire Master (India) Pvt (Ltd) - 9832661323"), "name", "India") == "fire master india"
     assert finish("lc", "name", "US") == "lc"
+
+    # Verify string_feats token behavior with normal and edge-case empty inputs
+    _test_df = pl.DataFrame({
+        "nm_q": ["apple pie", ""],
+        "nm_s": ["apple tart", "bakery"],
+        "ad_q": ["12 main st", ""],
+        "ad_s": ["12 elm st", "45 wall st"],
+        "rq_n": ["apple pie", ""],
+        "rs_n": ["apple tart", "bakery"],
+        "rq_a": ["12 main st", ""],
+        "rs_a": ["12 elm st", "45 wall st"],
+    })
+    _res = string_feats(_test_df)
+    assert _res["n_extra_q"].to_list() == [1, 0]
+    assert _res["n_extra_s"].to_list() == [1, 1]
 
     if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
         print("Usage: python src/features.py train|test         # Feature extraction")
